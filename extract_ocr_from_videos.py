@@ -1,7 +1,7 @@
 import argparse
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Tuple
 
 import cv2
 from yomitoku import OCR
@@ -11,7 +11,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Extract one frame around a target second from each MP4, "
-            "run OCR, and save results in a one-file-per-line CSV."
+            "run OCR with Yomitoku, and save results in a one-file-per-line CSV."
         )
     )
     parser.add_argument("--input-dir", default="input", help="Directory containing MP4 files")
@@ -19,14 +19,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sec", type=float, default=1.0, help="Target timestamp in seconds")
     parser.add_argument("--lang", default="jpn+eng", help="OCR language hint (Yomitoku expects jpn+eng)")
     parser.add_argument("--device", default="cpu", help="Yomitoku device: cpu or cuda")
-    parser.add_argument(
-        "--other-ocr",
-        default="tesseract",
-        help=(
-            "Comma-separated extra OCR engines to run and save separately "
-            "(supported: tesseract). Use none to disable."
-        ),
-    )
     parser.add_argument(
         "--csv-name",
         default="ocr_horizontal.csv",
@@ -133,56 +125,6 @@ def run_ocr(ocr_input_img, ocr_model: OCR, lang: str) -> str:
     return format_ocr_text_for_csv(text)
 
 
-def parse_other_ocr_engines(raw_value: str) -> List[str]:
-    value = (raw_value or "").strip().lower()
-    if not value or value == "none":
-        return []
-
-    supported = {"tesseract", "easyocr"}
-    engines = []
-    for item in value.split(","):
-        name = item.strip()
-        if not name:
-            continue
-        if name not in supported:
-            raise ValueError(f"Unsupported OCR engine: {name}. Supported: {sorted(supported)}")
-        engines.append(name)
-
-    # Keep order while removing duplicates.
-    return list(dict.fromkeys(engines))
-
-
-def run_tesseract_ocr(ocr_input_img, lang: str) -> str:
-    try:
-        import pytesseract
-    except ImportError as exc:
-        raise RuntimeError(
-            "pytesseract is required for --other-ocr tesseract. Install requirements and ensure Tesseract OCR is installed."
-        ) from exc
-
-    text = pytesseract.image_to_string(ocr_input_img, lang=lang, config="--psm 6")
-    return format_ocr_text_for_csv(text)
-
-
-def create_easyocr_reader(lang: str):
-    try:
-        import easyocr
-    except ImportError as exc:
-        raise RuntimeError(
-            "easyocr is required for --other-ocr easyocr. Install requirements before running."
-        ) from exc
-
-    if lang != "jpn+eng":
-        raise ValueError("EasyOCR mode currently supports --lang jpn+eng only.")
-
-    return easyocr.Reader(["ja", "en"], gpu=False)
-
-
-def run_easyocr_ocr(ocr_input_img, reader) -> str:
-    texts = reader.readtext(ocr_input_img, detail=0, paragraph=True)
-    return format_ocr_text_for_csv(" ".join(texts))
-
-
 def write_vertical_csv(csv_path: Path, ordered_results: List[Tuple[str, str]]) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -193,11 +135,7 @@ def write_vertical_csv(csv_path: Path, ordered_results: List[Tuple[str, str]]) -
 
 def main() -> int:
     args = parse_args()
-    other_ocr_engines = parse_other_ocr_engines(args.other_ocr)
     ocr_model = OCR(device=args.device)
-    easyocr_reader: Optional[Any] = None
-    if "easyocr" in other_ocr_engines:
-        easyocr_reader = create_easyocr_reader(args.lang)
 
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
@@ -213,7 +151,6 @@ def main() -> int:
         raise FileNotFoundError(f"No MP4 files found in: {input_dir}")
 
     results: List[Tuple[str, str]] = []
-    other_results: Dict[str, List[Tuple[str, str]]] = {name: [] for name in other_ocr_engines}
     for video in videos:
         print(f"Processing: {video.name}")
         frame = extract_frame_at_second(video, args.sec)
@@ -228,24 +165,8 @@ def main() -> int:
         text = run_ocr(ocr_input, ocr_model, args.lang)
         results.append((video.name, text))
 
-        for engine in other_ocr_engines:
-            if engine == "tesseract":
-                other_text = run_tesseract_ocr(ocr_input, args.lang)
-            elif engine == "easyocr":
-                if easyocr_reader is None:
-                    raise RuntimeError("EasyOCR reader was not initialized.")
-                other_text = run_easyocr_ocr(ocr_input, easyocr_reader)
-            else:
-                raise ValueError(f"Unsupported OCR engine at runtime: {engine}")
-            other_results[engine].append((video.name, other_text))
-
     write_vertical_csv(csv_path, results)
     print(f"Saved CSV: {csv_path}")
-
-    for engine, rows in other_results.items():
-        other_csv_path = csv_path.with_name(f"{csv_path.stem}_{engine}{csv_path.suffix}")
-        write_vertical_csv(other_csv_path, rows)
-        print(f"Saved CSV: {other_csv_path}")
     return 0
 
 
