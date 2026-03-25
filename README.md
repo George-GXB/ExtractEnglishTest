@@ -20,19 +20,19 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-python extract_ocr_from_videos.py --input-dir input --output-dir output --sec 1 --lang jpn+eng --device cpu
+python 1_bunkei.py --input-dir input --output-dir output --sec 1 --lang jpn+eng --device cpu
 ```
 
 Run with additional OCR (Tesseract) and save separate CSV:
 
 ```bash
-python extract_ocr_from_videos.py --input-dir input --output-dir output --sec 1 --lang jpn+eng --device cpu --other-ocr tesseract
+python 1_bunkei.py --input-dir input --output-dir output --sec 1 --lang jpn+eng --device cpu --other-ocr tesseract
 ```
 
 Run with multiple additional OCR engines:
 
 ```bash
-python extract_ocr_from_videos.py --input-dir input --output-dir output --sec 1 --lang jpn+eng --device cpu --other-ocr tesseract,easyocr
+python 1_bunkei.py --input-dir input --output-dir output --sec 1 --lang jpn+eng --device cpu --other-ocr tesseract,easyocr
 ```
 
 ## Output
