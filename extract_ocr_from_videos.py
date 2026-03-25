@@ -1,5 +1,6 @@
 import argparse
 import re
+import shutil
 from pathlib import Path
 from typing import List, Tuple
 
@@ -34,12 +35,12 @@ def normalize_text(text: str) -> str:
 
 
 def sort_choices_in_text(text: str) -> str:
-    """選択肢グループ（,③,第3文型 など）を①②③④の昇順に並べ替える。"""
+    """選択肢グループ（,③,第3文型 など）を①②③④の昇順に並べ替える。文型は1～5対応。"""
     circled_order = {"①": 1, "②": 2, "③": 3, "④": 4}
-    choice_block = re.compile(r"((?:,[①②③④],第[1-4]文型)+)")
+    choice_block = re.compile(r"((?:,[①②③④],第[1-5]文型)+)")
 
     def _sort_block(m: re.Match) -> str:
-        pairs = re.findall(r",([①②③④]),(第[1-4]文型)", m.group(1))
+        pairs = re.findall(r",([①②③④]),(第[1-5]文型)", m.group(1))
         pairs_sorted = sorted(pairs, key=lambda p: circled_order.get(p[0], 99))
         return "".join(f",{circ},{kei}" for circ, kei in pairs_sorted)
 
@@ -48,7 +49,7 @@ def sort_choices_in_text(text: str) -> str:
 
 def format_ocr_text_for_csv(text: str) -> str:
     cleaned = normalize_text(text)
-    if not re.search(r"[1-4]\s*第\s*[1-4]\s*文型", cleaned):
+    if not re.search(r"[1-4]\s*第\s*[1-5]\s*文型", cleaned):
         return cleaned
 
     circled = {"1": "①", "2": "②", "3": "③", "4": "④"}
@@ -58,7 +59,7 @@ def format_ocr_text_for_csv(text: str) -> str:
         sentence_no = match.group(2)
         return f",{circled[choice_no]},第{sentence_no}文型"
 
-    formatted = re.sub(r"([1-4])\s*第\s*([1-4])\s*文型", _replace_choice, cleaned)
+    formatted = re.sub(r"([1-4])\s*第\s*([1-5])\s*文型", _replace_choice, cleaned)
     formatted = re.sub(r"\s*,\s*", ",", formatted)
     formatted = re.sub(r"。(?=,)", "。", formatted)
     formatted = re.sub(r"文型\s+([A-Za-z])", r"文型,\1", formatted)
@@ -116,13 +117,14 @@ def prepare_ocr_input(source_img):
     return cropped
 
 
-def run_ocr(ocr_input_img, ocr_model: OCR, lang: str) -> str:
+def run_ocr(ocr_input_img, ocr_model: OCR, lang: str) -> Tuple[str, str]:
     if lang != "jpn+eng":
         raise ValueError("Yomitoku mode supports --lang jpn+eng only.")
 
     result, _ = ocr_model(ocr_input_img)
-    text = " ".join(word.content for word in result.words if word.content)
-    return format_ocr_text_for_csv(text)
+    raw_text = " ".join(word.content for word in result.words if word.content)
+    formatted_text = format_ocr_text_for_csv(raw_text)
+    return raw_text, formatted_text
 
 
 def write_vertical_csv(csv_path: Path, ordered_results: List[Tuple[str, str]]) -> None:
@@ -133,18 +135,41 @@ def write_vertical_csv(csv_path: Path, ordered_results: List[Tuple[str, str]]) -
             f.write(f"{filename},{text}\n")
 
 
-def main() -> int:
+def write_raw_text_file(txt_path: Path, raw_text: str) -> None:
+    txt_path.parent.mkdir(parents=True, exist_ok=True)
+    with txt_path.open("w", encoding="utf-8") as f:
+        f.write(raw_text)
+
+
+def clear_output_dir(output_dir: Path) -> None:
+    if not output_dir.exists():
+        return
+
+    for child in output_dir.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def main(sec: float | None = None) -> int:
     args = parse_args()
+    target_sec = args.sec if sec is None else sec
+    special_video_name = "標準演習_文型_5_6_part_004.mp4"
+    special_video_sec = 3.0
     ocr_model = OCR(device=args.device)
 
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     frames_dir = output_dir / "frames"
     ocr_input_dir = output_dir / "ocr_input"
+    raw_text_dir = output_dir / "raw_text"
     csv_path = output_dir / args.csv_name
 
+    clear_output_dir(output_dir)
     frames_dir.mkdir(parents=True, exist_ok=True)
     ocr_input_dir.mkdir(parents=True, exist_ok=True)
+    raw_text_dir.mkdir(parents=True, exist_ok=True)
 
     videos = sorted(input_dir.glob("*.mp4"))
     if not videos:
@@ -153,17 +178,22 @@ def main() -> int:
     results: List[Tuple[str, str]] = []
     for video in videos:
         print(f"Processing: {video.name}")
-        frame = extract_frame_at_second(video, args.sec)
+        sec_for_video = special_video_sec if video.name == special_video_name else target_sec
+        frame = extract_frame_at_second(video, sec_for_video)
 
-        frame_path = frames_dir / f"{video.stem}_{int(args.sec)}s.jpg"
+        frame_path = frames_dir / f"{video.stem}_{int(sec_for_video)}s.jpg"
         save_image(frame_path, frame)
 
         ocr_input = prepare_ocr_input(frame)
-        ocr_input_path = ocr_input_dir / f"{video.stem}_{int(args.sec)}s_ocr_input.png"
+        ocr_input_path = ocr_input_dir / f"{video.stem}_{int(sec_for_video)}s_ocr_input.png"
         save_image(ocr_input_path, ocr_input)
 
-        text = run_ocr(ocr_input, ocr_model, args.lang)
-        results.append((video.name, text))
+        raw_text, formatted_text = run_ocr(ocr_input, ocr_model, args.lang)
+        results.append((video.name, formatted_text))
+        
+        # Save raw text to individual txt file
+        txt_path = raw_text_dir / f"{video.stem}_{int(sec_for_video)}s_raw.txt"
+        write_raw_text_file(txt_path, raw_text)
 
     write_vertical_csv(csv_path, results)
     print(f"Saved CSV: {csv_path}")
@@ -171,5 +201,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sec=1.0))
 
